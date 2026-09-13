@@ -37,7 +37,7 @@ async function main() {
     childCustomer = await prisma.customer.create({
       data: {
         name: 'บริษัท ตัวอย่าง สาขา 1 จำกัด',
-        parentId: parentCustomer.id,
+        parentName: parentCustomer.name,
         comment: 'ในเครือของบริษัท ตัวอย่าง กรุ๊ป จำกัด',
       },
     })
