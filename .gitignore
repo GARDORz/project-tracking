@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+
+# TestSprite MCP config holds the API key in plaintext
+.mcp.json
+testsprite_tests/tmp/
+
+# Claude Code local settings/skills — machine-specific, not project source
+.claude/
+.DS_Store
+backend/uploads/*
+!backend/uploads/.gitkeep
+testsprite_tests/tmp/config.json

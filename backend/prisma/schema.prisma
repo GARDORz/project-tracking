@@ -1,0 +1,311 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ENGINEERING
+  SALES
+  SUPER_ENGINEERING
+}
+
+model User {
+  id           String   @id @default(uuid())
+  userID       String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(ENGINEERING)
+  createdAt    DateTime @default(now())
+
+  reportedJobs  ServiceJob[]         @relation("ReportedJobs")
+  assignments   ServiceJobAssignee[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+}
+
+// Records only sensitive/high-impact actions (deletions, contract changes, user
+// management, login attempts) — not every CRUD call in the app. `message` is a
+// ready-to-display Thai description rather than a structured before/after diff,
+// by design (kept deliberately simple). `actorLabel` denormalizes the actor's
+// name/userID at the time of the action so the log stays readable even after
+// the user account itself is later deleted (actorId goes null via onDelete:
+// SetNull, but the label survives). `entityType`/`entityId` are optional,
+// free-form identifiers (e.g. "ServiceJob"/"SR202609161") kept mainly so a
+// future page could filter by them — not enforced against any specific model.
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorLabel String?
+  action     String
+  entityType String?
+  entityId   String?
+  message    String
+  createdAt  DateTime @default(now())
+
+  // The audit-log page always filters by createdAt range (sometimes plus
+  // actorId) and sorts by createdAt desc — index both so that query stays
+  // fast as this table grows over years of use, well before it'd ever need
+  // partitioning or archiving.
+  @@index([createdAt])
+  @@index([actorId])
+}
+
+model Customer {
+  id         String   @id @default(uuid())
+  name       String
+  // Free text, not a link to another Customer row — "ในเครือของ" can name any
+  // company (including ones that aren't themselves tracked here as a customer).
+  // Defaults to "SYSCOMP CORPORATION CO.,LTD." when a new customer is created
+  // without one (see customers.ts POST route); edits can still blank it out.
+  parentName String?
+  comment    String?
+  // Hidden customers stay visible/manageable in the Customers page but are excluded
+  // from the customer picker when creating a new job.
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  serviceJobs ServiceJob[]
+  contacts    CustomerContact[]
+  projects    Project[]
+}
+
+// A customer can organize its jobs under named projects (e.g. separate sites/contracts).
+// isActive hides a project from the job-creation picker without deleting its history,
+// same pattern as Customer.isActive and CustomerContact.isActive.
+model Project {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name       String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  // Free-text year (typically the Buddhist-era year, e.g. "2568") — unrelated to
+  // the contract dates below. Shown in parentheses after the project name in the
+  // UI when set. Optional, no validation.
+  projectYear String?
+
+  // Contract tracking — all optional since not every project has one on file.
+  // Lives here (not on Customer) because one customer can run several projects,
+  // each under its own separate contract.
+  contractNumber       String?
+  contractStartDate    DateTime?
+  contractEndDate      DateTime?
+  // How many months before contractEndDate the expiry reminder starts firing.
+  // Defaults to 1 when the project form leaves it unset; capped 1-12 in the API.
+  contractNotifyMonths Int       @default(1)
+
+  serviceJobs     ServiceJob[]
+  attachments     ProjectAttachment[]
+  slaEntries      ProjectSla[]
+  equipment       ProjectEquipment[]
+  equipmentFaults ProjectEquipmentFault[]
+}
+
+// Equipment/asset inventory for a project — imported in bulk from an Excel file
+// (a re-import replaces the whole list). All columns optional; a row is only
+// skipped when every column is blank.
+model ProjectEquipment {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  brand       String?
+  model       String?
+  serialNo    String?
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+// Faulty-equipment log for a project. A row here is a point-in-time *copy* of a
+// ProjectEquipment row (made when someone flags that item as broken from the
+// equipment page) — deliberately not a foreign key, so it survives the source
+// equipment list being re-imported/replaced. Same four optional columns plus the
+// date it was reported.
+model ProjectEquipmentFault {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  brand       String?
+  model       String?
+  serialNo    String?
+  description String?
+  reportedAt  DateTime @default(now())
+}
+
+// A project can have multiple attached files — mirrors Attachment (ServiceJob's
+// file attachments) exactly, just scoped to a project instead of a job, since a
+// project-level file (e.g. a signed SLA doc) isn't tied to any one job.
+model ProjectAttachment {
+  id         String   @id @default(uuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fileName   String
+  storedName String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime @default(now())
+}
+
+// A project can define multiple SLAs (resolution time as days+hours, response
+// time in hours only) — e.g. one for standard jobs, another for urgent ones.
+// No name field: entries are told apart by their numbers, shown as-is in the
+// picker. `isActive` hides an SLA from the job-creation picker without deleting
+// it, same pattern as Customer/CustomerContact/Project — jobs that already
+// reference a hidden SLA keep showing it.
+model ProjectSla {
+  id                 String   @id @default(uuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  slaResolutionDays  Int      @default(0)
+  slaResolutionHours Int      @default(0)
+  slaResponseHours   Int      @default(0)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+
+  serviceJobs ServiceJob[]
+}
+
+// A customer can have multiple contact people. `isActive` lets one be turned off
+// (e.g. someone who left the company) without deleting their record/history.
+model CustomerContact {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name       String
+  phone      String?
+  email      String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+// Tracks the last used running number per "yyyyMM" period for ServiceJob.jobNo generation.
+model JobSequence {
+  yearMonth  String @id
+  lastNumber Int    @default(0)
+}
+
+enum ServiceType {
+  WARRANTY
+  MA_SERVICE
+  PERCALL
+  OTHER
+}
+
+enum ServiceStatus {
+  NEW
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+// Which channel the customer used to report the job. Optional — not every job
+// records it.
+enum ContactChannel {
+  PHONE
+  EMAIL
+  LINE
+}
+
+// A second, independent classification of the job (what the work is about),
+// separate from `type` (the warranty/contract classification). Optional on
+// existing rows; the create form requires it for new jobs.
+enum ServiceCategory {
+  HARDWARE
+  SOFTWARE
+  PROFESSIONAL_SERVICE
+  OTHER
+}
+
+model ServiceJob {
+  jobNo                String               @id
+  reporterId           String
+  reporter             User                 @relation("ReportedJobs", fields: [reporterId], references: [id])
+  customerId           String
+  customer             Customer             @relation(fields: [customerId], references: [id])
+  // Optional grouping under the customer — not every customer organizes work by project.
+  // onDelete: Restrict (matching Customer's implicit default) — a project with jobs
+  // attached can't be deleted outright, same as the isActive-toggle-instead pattern.
+  projectId            String?
+  project              Project?             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  // Which of the project's SLA entries this job is measured against — optional,
+  // and cleared (not blocked) if that SLA entry is ever removed.
+  slaId                String?
+  sla                  ProjectSla?          @relation(fields: [slaId], references: [id], onDelete: SetNull)
+  title                String
+  description          String?
+  type                 ServiceType
+  // Free-text label the reporter enters when type is OTHER, e.g. "ติดตั้งเพิ่มเติม".
+  // Every other type reuses the same field for its CM/PM checkboxes, encoded as "CM, PM".
+  typeOther            String?
+  // Which channel the customer reported this job through — optional.
+  contactChannel       ContactChannel?
+  // Independent "what the work is about" classification — see the enum comment.
+  // `serviceCategoryOther` holds the free-text label when it's OTHER, mirroring typeOther.
+  serviceCategory      ServiceCategory?
+  serviceCategoryOther String?
+  assignees            ServiceJobAssignee[]
+  remark               String?
+  status               ServiceStatus        @default(NEW)
+  reportedAt           DateTime             @default(now())
+  // Unguessable token for the public customer-facing tracking link — never the
+  // sequential jobNo, so a customer can't page through other customers' jobs.
+  shareToken           String               @unique @default(uuid())
+
+  // Time tracking — the clock runs only while status is IN_PROGRESS. `startedAt` is set
+  // once, the first time the job ever enters IN_PROGRESS, and never changes after that.
+  // `currentSegmentStartedAt` marks when the *current* IN_PROGRESS segment began (null
+  // whenever the job isn't currently in progress); each time the job leaves IN_PROGRESS
+  // (paused, completed, cancelled, ...), that segment's elapsed time is banked into
+  // `workedSeconds` and `currentSegmentStartedAt` is cleared. `completedAt` is set when
+  // the job reaches COMPLETED and cleared again if it's ever moved off COMPLETED.
+  startedAt               DateTime?
+  completedAt             DateTime?
+  workedSeconds           Int       @default(0)
+  currentSegmentStartedAt DateTime?
+
+  attachments   Attachment[]
+  notifications Notification[]
+}
+
+// A job can have multiple attached files. The actual bytes live on disk under
+// backend/uploads/ (one file per row, named by storedName); this table is just
+// their metadata.
+model Attachment {
+  id         String     @id @default(uuid())
+  jobNo      String
+  job        ServiceJob @relation(fields: [jobNo], references: [jobNo], onDelete: Cascade)
+  fileName   String
+  storedName String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime   @default(now())
+}
+
+// Join table for the many-to-many job<->assignee relation (a job can have multiple
+// people responsible for it, unlike reporter/customer which stay single).
+model ServiceJobAssignee {
+  jobNo  String
+  userId String
+  job    ServiceJob @relation(fields: [jobNo], references: [jobNo], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([jobNo, userId])
+}
+
+model Notification {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message   String
+  jobNo     String?
+  job       ServiceJob? @relation(fields: [jobNo], references: [jobNo], onDelete: SetNull)
+  read      Boolean     @default(false)
+  createdAt DateTime    @default(now())
+}

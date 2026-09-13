@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+/* Manual light/dark toggle via a `.dark` class on <html>, instead of only prefers-color-scheme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-brand-green: #1a5f3f;
+  --color-brand-green-dark: #123f2a;
+  --color-brand-red: #d62828;
+  --color-brand-orange: #f77f00;
+  --color-brand-yellow: #fcbf29;
+  --color-brand-lime: #8bc34a;
+  --font-sans: 'Kanit', system-ui, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Without this, native form controls (select dropdown popups, date pickers,
+   scrollbars) always render in the OS's light theme, even while the rest of
+   the page is dark. */
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+/* `color-scheme` alone doesn't reliably theme the native <select> dropdown
+   popup in every browser — style <option> directly as a fallback. */
+.dark select {
+  color-scheme: dark;
+}
+
+.dark option {
+  background-color: #1f2937;
+  color: #f3f4f6;
+}
